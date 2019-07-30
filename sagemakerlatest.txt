@@ -1,0 +1,103 @@
+import numpy as np
+from numpy import array
+import matplotlib.pyplot as plt
+import pandas as pd
+import boto3
+import re
+from sagemaker import get_execution_role
+import os
+import io
+import json
+import time
+import sagemaker.amazon.common as smac
+
+
+role=get_execution_role()
+bucket='datasetfirealertsystem'
+s3=boto3.resource('s3')
+KEY='mix dataset.csv'
+s3.Bucket(bucket).download_file(KEY,'mix dataset.csv')
+data=pd.read_csv('mix dataset.csv')
+data
+
+
+rand_split=np.random.rand(len(data))
+train_list=rand_split < 0.75
+val_list=(rand_split >=0.75) & (rand_split < 0.85)
+test_list=rand_split >=0.85
+data_train=data[train_list]
+data_val=data[val_list]
+data_test=data[test_list]
+train_y=data_train.iloc[:,3].as_matrix()
+train_x=data_train.iloc[:,0:3].as_matrix()
+test_y=data_test.iloc[:,3].as_matrix()
+test_x=data_test.iloc[:,0:3].as_matrix()
+val_y=data_val.iloc[:,3].as_matrix()
+val_x=data_val.iloc[:,0:3].as_matrix()
+data_test.shape
+
+
+train_file='linear_train.data'
+f=io.BytesIO()
+trainxx=train_x.astype('float32')
+testxx=test_x.astype('float32')
+testxy=test_y.astype('float32')
+valyy=val_x.astype('float32')
+smac.write_numpy_to_dense_tensor(f,train_x.astype('float32'),train_y.astype('float32'))
+f.seek(0)
+s3.Bucket(bucket).Object('train/' + train_file).upload_fileobj(f)
+validation_file='linear_validation.data'
+f=io.BytesIO()
+smac.write_numpy_to_dense_tensor(f, val_x.astype('float32'),val_y.astype('float32'))
+f.seek(0)
+s3.Bucket(bucket).Object('validation/' + validation_file).upload_fileobj(f)
+
+
+
+from sagemaker.amazon.amazon_estimator import get_image_uri
+container=get_image_uri(boto3.Session().region_name, 'linear-learner')
+import boto3
+import sagemaker
+sess = sagemaker.Session()
+linear = sagemaker.estimator.Estimator(container,
+                                       role,
+                                       train_instance_count=1,
+                                       train_instance_type='ml.c4.xlarge',
+                                       output_path="s3://testdatafirealertsystem/",
+                                       sagemaker_session=sess)
+linear.set_hyperparameters(feature_dim=3,
+                           mini_batch_size=4,
+                           predictor_type='binary_classifier')
+linear.fit({'train': "s3://datasetfirealertsystem/train/linear_train.data"})
+
+
+
+linear_predictor = linear.deploy(initial_instance_count=1,
+                                 instance_type='ml.m4.xlarge')
+
+
+from sagemaker.predictor import csv_serializer, json_deserializer
+linear_predictor.content_type = 'text/csv'
+linear_predictor.serializer = csv_serializer
+linear_predictor.deserializer = json_deserializer
+result = linear_predictor.predict(test_x)
+print(result)
+print(test_y)
+
+
+
+
+one_step=np.array([r['predicted_label']for r in result['predictions']])
+print(one_step)
+print(test_y)
+q=np.median(np.abs(test_y-one_step)/test_y)
+print(q)
+plt.plot(np.array(test_y),label='actual')
+plt.plot(one_step,label='predicted')
+plt.legend()
+plt.show()
+
+accuracy=np.mean(test_y == one_step)*100
+print("ACCURACY OF THE MODEL IS->",accuracy,"%")
+
+
